@@ -11,13 +11,14 @@ import os
 import hmac
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 from fastapi import FastAPI, Form, Request, HTTPException, Header
 from fastapi.responses import PlainTextResponse
 from twilio.rest import Client as TwilioClient
 from twilio.request_validator import RequestValidator
 
-from app import bot, db, traffic, ads
+from . import bot, db, traffic, ads
 
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -25,8 +26,24 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 CRON_SECRET = os.getenv("CRON_SECRET", "change-me-in-production")
 
-twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
+# Lazy singletons — only created on first use so missing env vars don't
+# crash the process at import time (Railway starts the app before secrets load)
+_twilio_client: Optional[TwilioClient] = None
+_twilio_validator: Optional[RequestValidator] = None
+
+
+def _get_twilio_client() -> TwilioClient:
+    global _twilio_client
+    if _twilio_client is None:
+        _twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    return _twilio_client
+
+
+def _get_twilio_validator() -> RequestValidator:
+    global _twilio_validator
+    if _twilio_validator is None:
+        _twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
+    return _twilio_validator
 
 
 @asynccontextmanager
@@ -55,7 +72,7 @@ async def whatsapp_webhook(
         url = str(request.url)
         form_data = dict(await request.form())
         sig = request.headers.get("X-Twilio-Signature", "")
-        if not twilio_validator.validate(url, form_data, sig):
+        if not _get_twilio_validator().validate(url, form_data, sig):
             raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
     phone = From.replace("whatsapp:", "")
@@ -115,7 +132,7 @@ async def morning_alerts(x_cron_secret: str = Header(default="")):
 
 
 def _send_whatsapp(to_phone: str, message: str) -> None:
-    twilio_client.messages.create(
+    _get_twilio_client().messages.create(
         from_=TWILIO_WHATSAPP_FROM,
         to=f"whatsapp:{to_phone}",
         body=message,
